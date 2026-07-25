@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: atlas-veroeffentlichung
@@ -82,3 +82,17 @@ jobs:
           done
           echo "Die Seite konnte nach der Veröffentlichung nicht bestätigt werden."
           exit 1
+
+      - name: Status im Repository speichern
+        if: always()
+        env:
+          ERGEBNIS: ${{ job.status }}
+          QUELLE: ${{ github.sha }}
+        run: |
+          ZEIT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          printf '{\n  "status": "%s",\n  "quelle": "%s",\n  "zeit": "%s",\n  "adresse": "https://atlas.smarbiz.sbs"\n}\n' "$ERGEBNIS" "$QUELLE" "$ZEIT" > deploy-status.json
+          git config user.name "Atlas Veröffentlichung"
+          git config user.email "actions@users.noreply.github.com"
+          git add deploy-status.json
+          git commit -m "Veröffentlichungsstatus aktualisieren" || exit 0
+          git push
