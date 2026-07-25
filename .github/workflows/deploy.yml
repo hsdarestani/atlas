@@ -1,0 +1,84 @@
+name: Atlas veröffentlichen
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'styles.css'
+      - 'app.js'
+      - 'deploy/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-veroeffentlichung
+  cancel-in-progress: true
+
+jobs:
+  veroeffentlichen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Quellcode laden
+        uses: actions/checkout@v4
+
+      - name: SSH-Werkzeuge installieren
+        run: sudo apt-get update -qq && sudo apt-get install -y sshpass
+
+      - name: Dateien übertragen und Webserver einrichten
+        env:
+          HOST: ${{ secrets.HOST }}
+          PASS: ${{ secrets.PASS }}
+        run: |
+          test -n "$HOST" || { echo "HOST fehlt"; exit 1; }
+          test -n "$PASS" || { echo "PASS fehlt"; exit 1; }
+          export SSHPASS="$PASS"
+          SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$HOST"
+          SCP="sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+          $SSH "mkdir -p /var/www/atlas /tmp/atlas-deploy"
+          $SCP index.html styles.css app.js root@$HOST:/tmp/atlas-deploy/
+          $SCP deploy/nginx.conf root@$HOST:/tmp/atlas-deploy/nginx.conf
+
+          $SSH 'bash -s' <<'REMOTE'
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y nginx certbot python3-certbot-nginx
+          rm -rf /var/www/atlas/*
+          cp /tmp/atlas-deploy/index.html /var/www/atlas/
+          cp /tmp/atlas-deploy/styles.css /var/www/atlas/
+          cp /tmp/atlas-deploy/app.js /var/www/atlas/
+          cp /tmp/atlas-deploy/nginx.conf /etc/nginx/sites-available/atlas
+          ln -sfn /etc/nginx/sites-available/atlas /etc/nginx/sites-enabled/atlas
+          rm -f /etc/nginx/sites-enabled/default
+          chown -R www-data:www-data /var/www/atlas
+          find /var/www/atlas -type d -exec chmod 755 {} \;
+          find /var/www/atlas -type f -exec chmod 644 {} \;
+          nginx -t
+          systemctl enable --now nginx
+          systemctl reload nginx
+          certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email -d atlas.smarbiz.sbs --redirect || true
+          nginx -t
+          systemctl reload nginx
+          rm -rf /tmp/atlas-deploy
+          REMOTE
+
+      - name: Veröffentlichung prüfen
+        run: |
+          for i in 1 2 3 4 5; do
+            if curl -fsSL --max-time 15 https://atlas.smarbiz.sbs/ | grep -q "ATLAS GAMES"; then
+              echo "Atlas Games ist erreichbar."
+              exit 0
+            fi
+            if curl -fsSL --max-time 15 http://atlas.smarbiz.sbs/ | grep -q "ATLAS GAMES"; then
+              echo "Atlas Games ist über HTTP erreichbar."
+              exit 0
+            fi
+            sleep 8
+          done
+          echo "Die Seite konnte nach der Veröffentlichung nicht bestätigt werden."
+          exit 1
